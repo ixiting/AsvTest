@@ -24,7 +24,7 @@ public class DroneConsoleView {
         if (_suppressRender) return;
 
         Console.Clear();
-        Console.WriteLine("Starting interactive console. Keys: t=takeoff, l=land, g=goto, q=quit");
+        Console.WriteLine("Starting interactive console. Keys: t=takeoff, l=land, g=goto, h=home, q=quit");
         if (!string.IsNullOrEmpty(_status)) {
             var s = _status.Length > 120 ? _status[..120] + "..." : _status;
             Console.WriteLine($"Status: {s}");
