@@ -1,0 +1,31 @@
+# Visual Studio / Rider
+bin/
+obj/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.ide
+/.idea/
+
+# Rider
+.idea/
+.idea/**
+
+# Build outputs
+**/bin/
+**/obj/
+
+# Logs and local files
+commands.log
+*.log
+
+# OS files
+Thumbs.db
+ehthumbs.db
+.DS_Store
+
+# Dotnet
+*.db
+*.db-shm
+*.db-wal
