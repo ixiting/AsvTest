@@ -6,9 +6,23 @@ public static class Program
     {
         try
         {
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                cts.Cancel();;
+            };
+
             var app = new AsvApp();
-            await app.RunAsync().ConfigureAwait(false);
-            return 0;
+            try
+            {
+                await app.RunAsync(cts.Token).ConfigureAwait(false);
+                return 0;
+            }
+            finally
+            {
+                await ((IAsyncDisposable)app).DisposeAsync();
+            }
         }
         catch (Exception ex)
         {

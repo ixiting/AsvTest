@@ -20,14 +20,14 @@ public class DroneConsoleView {
         _status = status ?? string.Empty;
     }
 
-    public void UpdatePosition(Core.DroneTelemetry.TelemetrySample coord) {
+    public void UpdatePosition(Core.DroneTelemetry.TelemetrySample coord)
+    {
         if (_suppressRender) return;
-
-        Console.Clear();
-        Console.WriteLine("Starting interactive console. Keys: t=takeoff, l=land, g=goto, h=home, q=quit");
-        if (!string.IsNullOrEmpty(_status)) {
-            var s = _status.Length > 120 ? _status[..120] + "..." : _status;
-            Console.WriteLine($"Status: {s}");
+        var help = new Markup("[grey]Keys: t=takeoff | l=land | g=goto | r=rtl | q=quit[/]");
+        var status = string.Empty;
+        if (!string.IsNullOrEmpty(_status))
+        {
+            status = _status.Length > 120 ? _status[..120] + "..." : _status;
         }
 
         _table.Rows.Clear();
@@ -36,8 +36,28 @@ public class DroneConsoleView {
             coord.Lon.ToString("F6"),
             coord.AbsAlt.ToString("F1"),
             coord.RelAlt.ToString("F1"),
-            coord.Vz.ToString("F2")
+            coord.Speed.ToString("F2")
         );
+
+        AnsiConsole.Clear();
+        AnsiConsole.Write(help);
+        AnsiConsole.WriteLine();
+        if (!string.IsNullOrEmpty(status))
+        {
+            AnsiConsole.Write(new Markup($"[yellow]Status:[/] {status}"));
+            AnsiConsole.WriteLine();
+        }
+        AnsiConsole.Write(_table);
+    }
+
+    public DroneConsoleView()
+    {
+        _table.Rows.Clear();
+        _table.AddRow("-", "-", "-", "-", "-");
+        AnsiConsole.Clear();
+        var h = new Markup("[grey]Keys: t=takeoff | l=land | g=goto | r=rtl | q=quit[/]");
+        AnsiConsole.Write(h);
+        AnsiConsole.WriteLine();
         AnsiConsole.Write(_table);
     }
 

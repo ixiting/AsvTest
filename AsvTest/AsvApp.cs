@@ -1,134 +1,53 @@
+using R3;
+
+using Spectre.Console;
+
 using AsvTest.Core;
 using AsvTest.UI;
 
 namespace AsvTest;
 
-public class AsvApp : IDisposable {
+public class AsvApp(string host = "127.0.0.1", int port = 5760) : IAsyncDisposable {
 
-    private DroneConnection? _connection;
-    private DroneConsoleView? _view;
-    private MenuHandler? _menu;
+    private readonly DroneConnection _connection = new(host, port);
+    private readonly DroneConsoleView? _view = new();
+    private readonly MenuHandler? _menu = new();
+    private DroneTelemetry.TelemetrySample? _lastSample;
 
-    public async Task RunAsync() {
-        using var cts = new CancellationTokenSource();
-        _connection = new DroneConnection();
-
+    public async Task RunAsync(CancellationToken appCancelToken) {
         try {
-            await _connection.StartAsync(cts.Token).ConfigureAwait(false);
-        } catch (Exception ex) {
-            Console.WriteLine("Failed to start connection: " + ex.Message);
+            await _connection.StartAsync(appCancelToken);
+            AnsiConsole.MarkupLine("[green]✓ Connected to drone[/]");
+        } catch (OperationCanceledException) {
             throw;
+        } catch (Exception ex) {
+            AnsiConsole.MarkupLine($"[red]✗ Connection failed: {ex.Message}[/]");
+            return;
         }
 
-        _view = new DroneConsoleView();
+        var controller = _connection.Controller ?? throw new InvalidOperationException("Controller not initialized");
+        var telemetry = _connection.Telemetry ?? throw new InvalidOperationException("Telemetry not initialized");
 
-        var telemetry = _connection.Telemetry ?? throw new InvalidOperationException("Telemetry missing");
-        var controller = _connection.Controller ?? throw new InvalidOperationException("Controller missing");
-        var teleSub = telemetry.Coordinates.Subscribe(c => _view.UpdatePosition(c));
+        _menu?.StartAsync();
 
-        _menu = new MenuHandler();
-        _menu.Start();
+        var commandTcs = new TaskCompletionSource<bool>();
 
-        var exitTcs = new TaskCompletionSource<bool>();
+        using var subscription = _menu!.Commands.Subscribe(cmd => {
+            _ = HandleCommandAsync(cmd, controller);
+            if (cmd == "q") commandTcs.TrySetResult(true);
+        });
 
-        var menuSub = _menu.Commands.Subscribe(OnNext);
-
-        await exitTcs.Task.ConfigureAwait(false);
+        using var telemetrySub = telemetry.Coordinates.Subscribe(sample => {
+            _lastSample = sample;
+            _view?.UpdatePosition(sample);
+        });
 
         try {
-            menuSub.Dispose();
-        } catch {
-            // ignored
-        }
-
-        try {
-            teleSub.Dispose();
-        } catch {
-            // ignored
-        }
-
-        _menu?.Stop();
-
-        await _connection.DisposeAsync().ConfigureAwait(false);
-        return;
-
-        async void OnNext(string cmd) {
-            try {
-                switch (cmd) {
-                    case "t":
-                        await controller.TakeOffAsync(cancel: cts.Token).ConfigureAwait(false);
-                        break;
-                    case "l":
-                        await controller.LandAsync(cts.Token).ConfigureAwait(false);
-                        break;
-                    case "h":
-                        await controller.DoRtlAsync(cts.Token).ConfigureAwait(false);
-                        break;
-                    case "g":
-                        _view.SuppressRender(true);
-                        string? inputLine;
-                        try {
-                            Console.Clear();
-                            Console.WriteLine("=== GoTo Command ===");
-                            Console.WriteLine("Enter target coordinates: lat lon [alt]");
-                            Console.Write("Coordinates: ");
-                            inputLine = Console.ReadLine();
-                        } finally {
-                            _view.SuppressRender(false);
-                        }
-
-                        if (string.IsNullOrWhiteSpace(inputLine)) break;
-
-                        var parts2 = inputLine.Split([' ', ',', ';'], StringSplitOptions.RemoveEmptyEntries);
-                        if (parts2.Length < 2) {
-                            Console.WriteLine("Invalid input, need lat and lon");
-                            Thread.Sleep(1200);
-                            break;
-                        }
-
-                        if (!double.TryParse(parts2[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var latVal) ||
-                            !double.TryParse(parts2[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var lonVal)) {
-                            Console.WriteLine("Invalid lat/lon format");
-                            Thread.Sleep(1200);
-                            break;
-                        }
-
-                        var altVal = 0.0;
-                        if (parts2.Length >= 3)
-                            double.TryParse(parts2[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out altVal);
-
-                        Console.WriteLine($"Going to: lat={latVal:F6} lon={lonVal:F6} alt={altVal:F1}");
-
-                        var gotoTask = controller.GoToAsync(latVal, lonVal, altVal, cts.Token);
-                        _view.SetStatus($"GoTo sent -> lat={latVal:F6} lon={lonVal:F6} alt={altVal:F1}");
-
-                        _ = gotoTask.ContinueWith(t => {
-                            if (t.IsFaulted) {
-                                var be = t.Exception?.GetBaseException();
-                                var msg = be?.Message ?? "GoTo failed";
-                                _view.SetStatus("GoTo error: " + msg);
-                                try {
-                                    File.AppendAllText("commands.log", DateTime.Now.ToString("o") + " GoTo error: " + be + Environment.NewLine);
-                                } catch {
-                                    // ignored
-                                }
-                            } else {
-                                _view.SetStatus("GoTo completed");
-                            }
-                        }, TaskScheduler.Default);
-
-                        Console.WriteLine("GoTo command sent. Press any key to continue...");
-                        Console.ReadKey(true);
-
-                        break;
-                    case "q":
-                        exitTcs.TrySetResult(true);
-                        break;
-                }
-            } catch (Exception ex) {
-                _view?.SetStatus("Command error: " + ex.Message);
+            await commandTcs.Task;
+        } catch (OperationCanceledException) { } finally {
+            if (_menu is not null) {
                 try {
-                    await File.AppendAllTextAsync("commands.log", DateTime.Now.ToString("o") + " " + ex + Environment.NewLine, cts.Token);
+                    await _menu.StopAsync().ConfigureAwait(false);
                 } catch {
                     // ignored
                 }
@@ -136,18 +55,194 @@ public class AsvApp : IDisposable {
         }
     }
 
-    public void Dispose() {
+    private async Task HandleCommandAsync(string cmd, DroneController controller) {
         try {
-            _menu?.Dispose();
-        } catch {
-            // ignored
+            switch (cmd) {
+                case "t":
+                    await controller.TakeOffAsync();
+                    break;
+
+                case "l":
+                    await controller.LandAsync();
+                    break;
+
+                case "r":
+                    await controller.DoRtlAsync();
+                    break;
+
+                case "g":
+                    await HandleGoTo(controller);
+                    break;
+
+                case "q":
+                    break;
+
+                default:
+                    AnsiConsole.MarkupLine($"[yellow]Unknown command: {cmd}[/]");
+                    break;
+            }
+        } catch (OperationCanceledException) { } catch (Exception ex) {
+            AnsiConsole.MarkupLine($"[red]✗ Command error: {ex.Message}[/]");
+        }
+    }
+
+    private async Task HandleGoTo(DroneController controller) {
+        var telemetry = _connection.Telemetry;
+        if (telemetry is null) {
+            _view?.SetStatus("No telemetry available");
+            return;
         }
 
+        _view?.SuppressRender(true);
         try {
-            _connection?.Dispose();
-        } catch {
-            // ignored
+            var homeStr = GetHomeCoordsString();
+            if (!string.IsNullOrEmpty(homeStr)) {
+                _view?.SetStatus($"Home: {homeStr}");
+            }
+
+            if (_lastSample is not null) {
+                _view?.SetStatus($"Current: lat={_lastSample.Lat:F6} lon={_lastSample.Lon:F6} abs={_lastSample.AbsAlt:F1} rel={_lastSample.RelAlt:F1}");
+            }
+
+            Console.Write("Target lat: ");
+            var latStr = Console.ReadLine();
+            if (!TryParseDoubleFlexible(latStr, out var lat)) {
+                _view?.SetStatus("Invalid latitude");
+                return;
+            }
+
+            Console.Write("Target lon: ");
+            var lonStr = Console.ReadLine();
+            if (!TryParseDoubleFlexible(lonStr, out var lon)) {
+                _view?.SetStatus("Invalid longitude");
+                return;
+            }
+
+            Console.Write("Target alt: ");
+            var altStr = Console.ReadLine();
+            if (!TryParseDoubleFlexible(altStr, out var alt)) {
+                _view?.SetStatus("Invalid altitude");
+                return;
+            }
+
+            double targetAltAbs = alt;
+            double fromLat = double.NaN, fromLon = double.NaN, fromAbs = double.NaN, fromRel = double.NaN;
+            if (_lastSample is not null) {
+                targetAltAbs = _lastSample.AbsAlt + alt;
+                fromLat = _lastSample.Lat;
+                fromLon = _lastSample.Lon;
+                fromAbs = _lastSample.AbsAlt;
+                fromRel = _lastSample.RelAlt;
+            }
+
+            _view?.SetStatus(
+                !double.IsNaN(fromLat)
+                    ? $"GoTo From: lat={fromLat:F6} lon={fromLon:F6} abs={fromAbs:F1} rel={fromRel:F1} -> To: lat={lat:F6} lon={lon:F6} relAlt={alt:F1} targetAbs={targetAltAbs:F1}"
+                    : $"GoTo To: lat={lat:F6} lon={lon:F6} relAlt={alt:F1} targetAbs={targetAltAbs:F1}");
+
+            try {
+                await controller.GoToAsync(lat, lon, targetAltAbs);
+                _view?.SetStatus(!double.IsNaN(fromLat)
+                    ? $"GoTo command sent From: lat={fromLat:F6} lon={fromLon:F6} -> To: lat={lat:F6} lon={lon:F6} targetAbs={targetAltAbs:F1}"
+                    : $"GoTo command sent -> lat={lat:F6} lon={lon:F6} targetAbs={targetAltAbs:F1}");
+            } catch (OperationCanceledException) {
+                _view?.SetStatus("GoTo cancelled");
+            } catch (Exception ex) {
+                _view?.SetStatus($"GoTo failed: {ex.Message}");
+            }
+        } finally {
+            _view?.SuppressRender(false);
         }
+    }
+
+    private string? GetHomeCoordsString() {
+        try {
+            var posClient = _connection.PositionClient as object;
+
+            if (posClient is null) return null;
+
+            var prop = posClient.GetType().GetProperty("Home")
+                       ?? posClient.GetType().GetProperty("HomePosition")
+                       ?? posClient.GetType().GetProperty("HomePoint");
+
+            var homeContainer = prop?.GetValue(posClient);
+            if (homeContainer is null) {
+                var directLat = posClient.GetType().GetProperty("HomeLat")?.GetValue(posClient);
+                var directLon = posClient.GetType().GetProperty("HomeLon")?.GetValue(posClient);
+                if (directLat is not null && directLon is not null) {
+                    double homeLat = Convert.ToDouble(directLat) / (Math.Abs(Convert.ToDouble(directLat)) > 1000 ? 1e7 : 1.0);
+                    double homeLon = Convert.ToDouble(directLon) / (Math.Abs(Convert.ToDouble(directLon)) > 1000 ? 1e7 : 1.0);
+                    return $"lat={homeLat:F6} lon={homeLon:F6}";
+                }
+
+                return null;
+            }
+
+            var currentProp = homeContainer.GetType().GetProperty("CurrentValue") ?? homeContainer.GetType().GetProperty("Value");
+            var hv = currentProp?.GetValue(homeContainer);
+            if (hv is null) return null;
+
+            var latProp = hv.GetType().GetProperty("Lat") ?? hv.GetType().GetProperty("Latitude");
+            var lonProp = hv.GetType().GetProperty("Lon") ?? hv.GetType().GetProperty("Longitude");
+            var altProp = hv.GetType().GetProperty("RelativeAlt") ?? hv.GetType().GetProperty("Alt") ?? hv.GetType().GetProperty("Altitude");
+
+            if (latProp is null || lonProp is null) return null;
+
+            var rlat = latProp.GetValue(hv);
+            var rlon = lonProp.GetValue(hv);
+            double homeLatVal, homeLonVal, homeAltVal = double.NaN;
+            if (rlat is long llat) homeLatVal = llat / 1e7;
+            else homeLatVal = Convert.ToDouble(rlat) / (Math.Abs(Convert.ToDouble(rlat)) > 1000 ? 1e7 : 1.0);
+            if (rlon is long llon) homeLonVal = llon / 1e7;
+            else homeLonVal = Convert.ToDouble(rlon) / (Math.Abs(Convert.ToDouble(rlon)) > 1000 ? 1e7 : 1.0);
+            if (altProp is null) {
+                return double.IsNaN(homeAltVal) ? $"lat={homeLatVal:F6} lon={homeLonVal:F6}" : $"lat={homeLatVal:F6} lon={homeLonVal:F6} alt={homeAltVal:F1}";
+            }
+
+            var ralt = altProp.GetValue(hv);
+            
+            homeAltVal = ralt switch {
+                int ia => ia / 1000.0,
+                long la => la / 1000.0,
+                _ => Convert.ToDouble(ralt)
+            };
+
+            return double.IsNaN(homeAltVal) ? $"lat={homeLatVal:F6} lon={homeLonVal:F6}" : $"lat={homeLatVal:F6} lon={homeLonVal:F6} alt={homeAltVal:F1}";
+        } catch {
+            return null;
+        }
+    }
+
+    private static bool TryParseDoubleFlexible(string? input, out double value) {
+        value = 0;
+        if (string.IsNullOrWhiteSpace(input)) return false;
+
+        if (double.TryParse(input, out value)) return true;
+
+        var alt = input.Replace(',', '.');
+        if (double.TryParse(alt, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value)) return true;
+
+        alt = input.Replace('.', ',');
+        return double.TryParse(alt, out value);
+    }
+
+    async ValueTask IAsyncDisposable.DisposeAsync() {
+        if (_menu is IAsyncDisposable am) {
+            try {
+                await am.DisposeAsync().ConfigureAwait(false);
+            } catch {
+                // ignored
+            }
+        } else {
+            try {
+                _menu?.Dispose();
+            } catch {
+                // ignored
+            }
+        }
+
+        _connection.Controller?.Dispose();
+        await _connection.DisposeAsync();
     }
 
 }
