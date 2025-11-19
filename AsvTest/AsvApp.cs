@@ -118,7 +118,7 @@ public class AsvApp(string host = "127.0.0.1", int port = 5760) : IAsyncDisposab
                 return;
             }
 
-            Console.Write("Target alt: ");
+            Console.Write("Target alt (relative): ");
             var altStr = Console.ReadLine();
             if (!TryParseDoubleFlexible(altStr, out var alt)) {
                 _view?.SetStatus("Invalid altitude");

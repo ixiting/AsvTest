@@ -11,10 +11,15 @@ public class MenuHandler : IDisposable, IAsyncDisposable {
 
     public Observable<string> Commands => _commands.AsObservable();
 
-    public Task StartAsync() {
-        if (_loopTask is not null && !_loopTask.IsCompleted) return Task.CompletedTask;
+    public Task StartAsync(CancellationToken token = default)
+    {
+        if (_loopTask is not null && !_loopTask.IsCompleted)
+            return Task.CompletedTask;
 
-        _cts = CancellationTokenSource.CreateLinkedTokenSource();
+        _cts = token == default
+            ? new CancellationTokenSource()
+            : CancellationTokenSource.CreateLinkedTokenSource(token);
+
         _loopTask = Task.Run(() => LoopAsync(_cts.Token), CancellationToken.None);
         return Task.CompletedTask;
     }
